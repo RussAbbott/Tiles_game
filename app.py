@@ -680,8 +680,15 @@ class TilePuzzleApp(tk.Tk):
         boundary is hidden by the border halo drawn on top.
         """
         self._photos = {}
-        tile_w = round(self._tw())   # uniform display width  for every tile
-        tile_h = round(self._th())   # uniform display height for every tile
+        # Use ceil, not round, so that every tile is at least as tall/wide as
+        # the largest cell for that dimension.  round() can produce a size 1 px
+        # *smaller* than some cells (e.g. for N=5, round(153.4)=153 but rows 1
+        # and 3 are 154 px), leaving a 1-pixel gap filled by the white border
+        # halo → visible white line.  With ceil the tile can be at most 1 px
+        # *larger* than a cell; the overflow pixel is covered by the next tile
+        # and then hidden by the border drawn on top — no gap, no line.
+        tile_w = math.ceil(self._tw())   # uniform display width  for every tile
+        tile_h = math.ceil(self._th())   # uniform display height for every tile
         for r in range(self.N):
             for c in range(self.N):
                 # Source crop: the rectangle of the scene belonging to tile (r, c)
