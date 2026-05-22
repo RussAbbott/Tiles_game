@@ -26,7 +26,7 @@
 # ── Imports ────────────────────────────────────────────────────────────────────
 
 import tkinter as tk                    # Python's built-in GUI framework
-from PIL import Image, ImageDraw, ImageTk  # Pillow: image creation and manipulation
+from PIL import Image, ImageDraw, ImageFilter, ImageTk  # Pillow: image creation and manipulation
 import random
 import math
 
@@ -320,26 +320,37 @@ def _draw_lines(drw, W, H):
 
 def _fit_image(img, w, h):
     """
-    Resize and centre-crop a Pillow image to exactly w × h pixels.
+    Fit a Pillow image into a w × h frame while preserving its aspect ratio.
 
-    The image is scaled so it *fills* the target rectangle in both dimensions
-    while preserving the original aspect ratio (known as "cover" scaling in
-    CSS).  Any excess width or height is then cropped symmetrically from the
-    centre, so the most important part of the image stays visible.
+    Strategy — "letterbox with blurred background":
+      1. Scale the image to fit entirely within the frame (no cropping).
+      2. Fill any remaining space with a heavily blurred, stretched copy of
+         the same image.
+
+    This avoids the heavy side-cropping that "cover" scaling produces when
+    fitting a landscape photo into a portrait frame (or vice-versa), while
+    looking far more natural than plain black bars.
 
     Examples:
-      - A landscape photo (16:9) fitted to 3:5 portrait → sides cropped
-      - A square photo fitted to 3:5 portrait → top and bottom cropped
-      - A portrait photo (3:5) fitted to 3:5 → no crop needed
+      - Landscape photo (4:3) → portrait frame (3:5):
+          image fits full-width, blurred bars fill top and bottom
+      - Portrait photo (3:5) → portrait frame (3:5):
+          perfect fit, no bars needed
+      - Square photo → portrait frame (3:5):
+          image fits full-width, blurred bars fill top and bottom
     """
     src_w, src_h = img.size
-    scale = max(w / src_w, h / src_h)   # scale to fill (not fit) the target
-    new_w = round(src_w * scale)
-    new_h = round(src_h * scale)
-    img   = img.resize((new_w, new_h), Image.LANCZOS)
-    left  = (new_w - w) // 2            # centre-crop horizontally
-    top   = (new_h - h) // 2            # centre-crop vertically
-    return img.crop((left, top, left + w, top + h))
+    scale  = min(w / src_w, h / src_h)      # scale to *fit* (no cropping)
+    new_w  = round(src_w * scale)
+    new_h  = round(src_h * scale)
+    fitted = img.resize((new_w, new_h), Image.LANCZOS)
+
+    # Background: stretch the image to fill the whole frame then blur heavily.
+    # This fills the letterbox bars with a soft version of the image itself
+    # rather than a jarring solid colour.
+    bg = img.resize((w, h), Image.LANCZOS).filter(ImageFilter.GaussianBlur(radius=20))
+    bg.paste(fitted, ((w - new_w) // 2, (h - new_h) // 2))
+    return bg
 
 
 def generate_scene(bg_rgb):
@@ -437,7 +448,11 @@ class TilePuzzleApp(tk.Tk):
 
         # Load button: lets the user choose an image file to use as the puzzle
         tk.Button(ctrl, text='📂 Load', font=('Helvetica', 11),
-                  command=self._load_image, relief='flat', padx=10).pack(side='left')
+                  command=self._load_image, relief='flat', padx=10).pack(side='left', padx=(0, 4))
+
+        # URL button: downloads an image from a web address and uses it as the puzzle
+        tk.Button(ctrl, text='🌐 URL', font=('Helvetica', 11),
+                  command=self._load_url, relief='flat', padx=10).pack(side='left')
 
         # ── Canvas ────────────────────────────────────────────────────────────
         # The canvas background colour is the border area visible around (and
@@ -656,12 +671,72 @@ class TilePuzzleApp(tk.Tk):
         self.update()
         self._start_puzzle(_fit_image(img, SZ, SZ_H))
 
+    def _load_url(self):
+        """
+        Ask for a web URL, download the image, and start a new puzzle with it.
+
+        Handles Wikipedia/Wikimedia media-viewer URLs automatically.  When a
+        user copies the address bar URL of a Wikipedia image (which looks like
+        …/wiki/Article#/media/File:Name.jpg or …/wiki/File:Name.jpg), the
+        server only sees the article HTML page — not the image.  We detect
+        those patterns and query the Wikipedia API to obtain the real upload
+        URL before downloading.
+
+        For all other sites a direct image URL is needed (right-click the
+        image in the browser → "Copy image address").
+        """
+        import io, json as _json, re, urllib.parse, urllib.request
+        from tkinter import simpledialog
+
+        url = simpledialog.askstring(
+            'Load from URL', 'Paste an image URL:', parent=self)
+        if not url:
+            return   # user cancelled
+
+        self.status_var.set('Resolving…')
+        self.update()
+        try:
+            # ── Wikipedia / Wikimedia: resolve page URL → direct image URL ──
+            # Matches any of:
+            #   https://en.wikipedia.org/wiki/Canada_goose#/media/File:Canada_goose.jpg
+            #   https://en.wikipedia.org/wiki/File:Canada_goose.jpg
+            #   https://commons.wikimedia.org/wiki/File:Canada_goose.jpg
+            m = re.search(
+                r'(?:wikipedia|wikimedia)\.org.*[/#](?:media/)?File:([^#&?]+)',
+                url, re.IGNORECASE)
+            if m:
+                filename = urllib.parse.unquote(m.group(1))
+                api = (f'https://en.wikipedia.org/w/api.php?action=query'
+                       f'&titles=File:{urllib.parse.quote(filename)}'
+                       f'&prop=imageinfo&iiprop=url&format=json')
+                req = urllib.request.Request(
+                    api, headers={'User-Agent': 'Mozilla/5.0 (TilePuzzle)'})
+                with urllib.request.urlopen(req, timeout=15) as resp:
+                    info = _json.loads(resp.read())
+                page = next(iter(info['query']['pages'].values()))
+                if 'imageinfo' in page:
+                    url = page['imageinfo'][0]['url']   # real upload.wikimedia.org URL
+
+            # ── Download the (resolved) image ───────────────────────────────
+            self.status_var.set('Downloading…')
+            self.update()
+            req = urllib.request.Request(
+                url, headers={'User-Agent': 'Mozilla/5.0 (TilePuzzle)'})
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = resp.read()
+            img = Image.open(io.BytesIO(data)).convert('RGB')
+        except Exception as e:
+            self.status_var.set(f'Could not load URL: {e}')
+            return
+        self.N = int(self.grid_var.get())
+        self._start_puzzle(_fit_image(img, SZ, SZ_H))
+
     def _start_puzzle(self, scene):
         """
         Slice scene into N×N tiles, shuffle them, and begin play.
 
-        Called by both build_grid (random scene) and _load_image (user image)
-        so all the setup logic lives in one place.
+        Called by build_grid (random scene), _load_image (file), and
+        _load_url (web) so all the setup logic lives in one place.
         """
         self.drag    = None
         self.solved  = False
