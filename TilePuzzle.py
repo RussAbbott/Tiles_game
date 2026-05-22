@@ -33,7 +33,7 @@ import math
 # ── Constants ──────────────────────────────────────────────────────────────────
 
 SZ       = 500                        # Width  of the generated scene image (pixels)
-SZ_H     = round(SZ * 5 / 3)         # Height of the generated scene image.
+SZ_H     = round(SZ * 5 / 3)          # Height of the generated scene image.
                                       # Tiles have a 3-wide : 5-tall aspect ratio,
                                       # matching the proportions of commercial tile sets.
 MARGIN   = 30                         # Gap (pixels) between the canvas edge and the grid
@@ -318,6 +318,30 @@ def _draw_lines(drw, W, H):
                  fill=rand_color(), width=max(1, round(rnd(4, 8))))
 
 
+def _fit_image(img, w, h):
+    """
+    Resize and centre-crop a Pillow image to exactly w × h pixels.
+
+    The image is scaled so it *fills* the target rectangle in both dimensions
+    while preserving the original aspect ratio (known as "cover" scaling in
+    CSS).  Any excess width or height is then cropped symmetrically from the
+    centre, so the most important part of the image stays visible.
+
+    Examples:
+      - A landscape photo (16:9) fitted to 3:5 portrait → sides cropped
+      - A square photo fitted to 3:5 portrait → top and bottom cropped
+      - A portrait photo (3:5) fitted to 3:5 → no crop needed
+    """
+    src_w, src_h = img.size
+    scale = max(w / src_w, h / src_h)   # scale to fill (not fit) the target
+    new_w = round(src_w * scale)
+    new_h = round(src_h * scale)
+    img   = img.resize((new_w, new_h), Image.LANCZOS)
+    left  = (new_w - w) // 2            # centre-crop horizontally
+    top   = (new_h - h) // 2            # centre-crop vertically
+    return img.crop((left, top, left + w, top + h))
+
+
 def generate_scene(bg_rgb):
     """
     Create and return a randomly generated abstract image (a Pillow Image object).
@@ -407,9 +431,13 @@ class TilePuzzleApp(tk.Tk):
                                    relief='flat', padx=10)
         self.undo_btn.pack(side='left', padx=(0, 4))
 
-        # New button: generates a brand-new shuffled puzzle
+        # New button: generates a brand-new random puzzle
         tk.Button(ctrl, text='↺ New', font=('Helvetica', 11),
-                  command=self.build_grid, relief='flat', padx=10).pack(side='left')
+                  command=self.build_grid, relief='flat', padx=10).pack(side='left', padx=(0, 4))
+
+        # Load button: lets the user choose an image file to use as the puzzle
+        tk.Button(ctrl, text='📂 Load', font=('Helvetica', 11),
+                  command=self._load_image, relief='flat', padx=10).pack(side='left')
 
         # ── Canvas ────────────────────────────────────────────────────────────
         # The canvas background colour is the border area visible around (and
@@ -592,20 +620,53 @@ class TilePuzzleApp(tk.Tk):
 
     def build_grid(self):
         """
-        Start a new puzzle: generate a fresh scene image, slice it into tiles,
-        and shuffle the tiles using the Fisher-Yates algorithm.
+        Start a new puzzle with a freshly generated random scene.
+        Resets the grid size from the selector, then delegates to _start_puzzle.
         """
         self.N = int(self.grid_var.get())
+        self.status_var.set('Generating…')
+        self.update()   # flush the UI so the message is visible during generation
+        _hue[0] = random.random() * 360    # reset to a fresh random hue sequence
+        self._start_puzzle(generate_scene(rand_bg()))
+
+    def _load_image(self):
+        """
+        Let the user pick an image file from disk and start a new puzzle with it.
+
+        The chosen image is scaled and centre-cropped to the scene dimensions
+        (SZ × SZ_H) using _fit_image, then handed to _start_puzzle exactly like
+        a generated scene.  Supports any format Pillow can open (JPEG, PNG,
+        BMP, WEBP, TIFF, …).
+        """
+        from tkinter import filedialog
+        path = filedialog.askopenfilename(
+            title='Choose an image for the puzzle',
+            filetypes=[('Images', '*.png *.jpg *.jpeg *.bmp *.webp *.tiff *.gif'),
+                       ('All files', '*.*')]
+        )
+        if not path:
+            return   # user cancelled the dialog
+        try:
+            img = Image.open(path).convert('RGB')
+        except Exception as e:
+            self.status_var.set(f'Could not open image: {e}')
+            return
+        self.N = int(self.grid_var.get())
+        self.status_var.set('Loading…')
+        self.update()
+        self._start_puzzle(_fit_image(img, SZ, SZ_H))
+
+    def _start_puzzle(self, scene):
+        """
+        Slice scene into N×N tiles, shuffle them, and begin play.
+
+        Called by both build_grid (random scene) and _load_image (user image)
+        so all the setup logic lives in one place.
+        """
         self.drag    = None
         self.solved  = False
         self.history = []
         self.undo_btn.config(state='disabled')
-        self.status_var.set('Generating…')
-        self.update()   # flush the UI so "Generating…" is visible during the slow step
-
-        # Generate a new scene and pre-render each tile as a PhotoImage
-        _hue[0] = random.random() * 360    # reset to a fresh random hue sequence
-        scene = generate_scene(rand_bg())
         self._make_photos(scene)
 
         # Build the solved tile grid: tiles[r][c] starts at its correct position
