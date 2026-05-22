@@ -170,18 +170,21 @@ def ellipse_pts(cx, cy, a, b, rot, n=32):
 
 # ── Scene generation ───────────────────────────────────────────────────────────
 #
-# The scene is built up in six layers, each handled by its own function:
+# The scene is built up in five layers, each handled by its own function:
 #
 #   _draw_large_shapes   – 2-3 big shapes that may bleed off the image edges
 #   _draw_medium_shapes  – 4-6 mid-sized shapes fully or mostly on-canvas
 #   _draw_accent_shapes  – 3-5 small shapes placed wholly within the image
 #   _draw_bursts         – 1-3 radial ray/burst patterns
 #   _draw_lines          – 1-3 thick diagonal lines
-#   _draw_vignette       – darkened-edge overlay for depth
+#
+# Note: a vignette (darkened-edge overlay) was considered but removed because
+# it created a visible oval across the whole scene that players could use as
+# an alignment guide — effectively a cheat.
 #
 # All layer functions take the Pillow ImageDraw object (drw), the image
 # dimensions (W, H), and any extra data they need (e.g. bg_rgb for the
-# donut punch-through colour and vignette brightness calculation).
+# donut punch-through colour).
 
 def _draw_shape(drw, pts_or_bbox, col, alpha=215):
     """
@@ -315,42 +318,6 @@ def _draw_lines(drw, W, H):
                  fill=rand_color(), width=max(1, round(rnd(4, 8))))
 
 
-def _draw_vignette(img, W, H, bg_rgb):
-    """
-    Layer 6: apply a vignette (darkened-edge overlay) to the image in-place.
-
-    A vignette makes the image look more polished and slightly three-dimensional
-    by darkening the edges.  We build a greyscale "mask" image: pixels with a
-    high mask value darken the image at that position; a mask value of 0
-    leaves the image unchanged.
-
-    The mask is built by drawing concentric ellipses with decreasing darkness
-    from the outside in.  The outermost ring is darkest; the centre fades to
-    fully transparent, leaving the middle of the image at full brightness.
-
-    Darker backgrounds get a lighter vignette (max_a is smaller) so the effect
-    is perceptible without making an already-dark scene look black around the edges.
-    """
-    br, bg_c, bb = bg_rgb
-    lum   = (br + bg_c + bb) / (3 * 255)         # average brightness 0-1
-    max_a = int((0.20 + 0.35*(1 - lum)) * 255)   # darker bg → lighter vignette
-    mask  = Image.new('L', (W, H), max_a)         # start: every pixel at max darkness
-    md    = ImageDraw.Draw(mask)
-    for i in range(1, 36):
-        t     = i / 35                                  # 0 → 1 as i increases
-        alpha = int(max_a * max(0.0, 1 - t**0.55))     # fade to 0 at the centre
-        # Scale x and y margins proportionally to the image dimensions so the
-        # vignette ellipses maintain the same aspect ratio as the image.
-        # Using min(W, H) for both would make the ellipses narrow and tall on a
-        # portrait image, leaving the top/bottom unnaturally dark and creating a
-        # visible oval artifact when the solved puzzle is viewed without borders.
-        mx    = int(t * W * 0.48)                      # x-margin proportional to width
-        my    = int(t * H * 0.48)                      # y-margin proportional to height
-        md.ellipse([mx, my, W-mx, H-my], fill=alpha)   # draw progressively smaller ellipse
-    # Paste a black layer using the mask: high mask value → more darkening, 0 → none
-    img.paste(Image.new('RGB', (W, H), (0, 0, 0)), mask=mask)
-
-
 def generate_scene(bg_rgb):
     """
     Create and return a randomly generated abstract image (a Pillow Image object).
@@ -370,7 +337,6 @@ def generate_scene(bg_rgb):
     _draw_accent_shapes(drw, W, H)
     _draw_bursts(drw, W, H)
     _draw_lines(drw, W, H)
-    _draw_vignette(img, W, H, bg_rgb)
 
     return img
 
