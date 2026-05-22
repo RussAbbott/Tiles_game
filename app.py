@@ -169,6 +169,181 @@ def ellipse_pts(cx, cy, a, b, rot, n=32):
             for t in (i/n*2*math.pi for i in range(n))]
 
 # ── Scene generation ───────────────────────────────────────────────────────────
+#
+# The scene is built up in six layers, each handled by its own function:
+#
+#   _draw_large_shapes   – 2-3 big shapes that may bleed off the image edges
+#   _draw_medium_shapes  – 4-6 mid-sized shapes fully or mostly on-canvas
+#   _draw_accent_shapes  – 3-5 small shapes placed wholly within the image
+#   _draw_bursts         – 1-3 radial ray/burst patterns
+#   _draw_lines          – 1-3 thick diagonal lines
+#   _draw_vignette       – darkened-edge overlay for depth
+#
+# All layer functions take the Pillow ImageDraw object (drw), the image
+# dimensions (W, H), and any extra data they need (e.g. bg_rgb for the
+# donut punch-through colour and vignette brightness calculation).
+
+def _draw_shape(drw, pts_or_bbox, col, alpha=215):
+    """
+    Draw one shape onto the image via the Pillow drawing context drw.
+
+    pts_or_bbox : either a list of (x,y) vertex tuples (→ polygon)
+                  or a flat [x0,y0,x1,y1] bounding box  (→ ellipse)
+    col         : (R, G, B) fill colour
+    alpha       : opacity, 0=transparent, 255=solid; default 215 gives slight
+                  translucency so underlying shapes show through faintly
+    """
+    rgba = col + (alpha,)
+    if isinstance(pts_or_bbox[0], tuple):
+        drw.polygon(pts_or_bbox, fill=rgba)
+    else:
+        drw.ellipse(pts_or_bbox, fill=rgba)
+
+
+def _draw_large_shapes(drw, W, H):
+    """
+    Layer 1: draw 2-3 large shapes that may extend beyond the image edges.
+
+    These big shapes establish the overall colour mood of the scene.  Centres
+    are allowed to sit up to 12% outside the canvas, so shapes can bleed off
+    any edge, giving the impression of an even larger composition.
+
+    Shape types chosen at random: circle/oval, rotated rectangle, triangle,
+    tilted ellipse, hexagon, or rotated square.
+    """
+    for _ in range(ri(2, 3)):
+        cx, cy = rnd(-W*.12, W*1.12), rnd(-H*.12, H*1.12)  # centre may be off-canvas
+        rot = rnd(0, 2*math.pi)
+        col = rand_color()
+        sz  = rnd(W*.17, W*.33)    # 17-33% of image width
+        t   = ri(0, 5)             # pick a random shape type
+        if   t == 0: _draw_shape(drw, [cx-sz, cy-sz, cx+sz, cy+sz], col)                  # circle
+        elif t == 1: _draw_shape(drw, rot_rect(cx, cy, sz*2, sz*rnd(.7,1.1), rot), col)   # rotated rect
+        elif t == 2: _draw_shape(drw, poly_pts(cx, cy, sz, 3, rot), col)                   # triangle
+        elif t == 3: _draw_shape(drw, ellipse_pts(cx, cy, sz, sz*rnd(.38,.65), rot), col) # ellipse
+        elif t == 4: _draw_shape(drw, poly_pts(cx, cy, sz, 6, rot), col)                   # hexagon
+        else:        _draw_shape(drw, poly_pts(cx, cy, sz, 4, rot), col)                   # rotated square
+
+
+def _draw_medium_shapes(drw, W, H, bg_rgb):
+    """
+    Layer 2: draw 4-6 medium shapes.
+
+    Centres are kept within 8% of the canvas edges.  One special shape type
+    is a donut (annulus): a circle with a smaller circle punched through its
+    centre using the background colour.  All other types are solid polygons or
+    a plain circle.
+
+    bg_rgb is needed so the donut's hole can be painted in the background colour.
+    """
+    br, bg_c, bb = bg_rgb   # unpack so we can use bg colour for the donut hole
+    for _ in range(ri(4, 6)):
+        cx, cy = rnd(-W*.08, W*1.08), rnd(-H*.08, H*1.08)
+        rot = rnd(0, 2*math.pi)
+        col = rand_color()
+        sz  = rnd(W*.07, W*.16)    # 7-16% of image width
+        t   = ri(0, 7)
+        if   t == 0: _draw_shape(drw, poly_pts(cx, cy, sz, 4, rot), col)                         # square
+        elif t == 1: _draw_shape(drw, poly_pts(cx, cy, sz, 5, rot), col)                         # pentagon
+        elif t == 2: _draw_shape(drw, poly_pts(cx, cy, sz, 6, rot), col)                         # hexagon
+        elif t == 3: _draw_shape(drw, [cx-sz, cy-sz, cx+sz, cy+sz], col)                         # circle
+        elif t == 4:
+            # Donut / annulus: draw a solid circle, then paint the background
+            # colour over a smaller concentric circle to create the hole
+            _draw_shape(drw, [cx-sz, cy-sz, cx+sz, cy+sz], col)
+            inn = sz * .52
+            drw.ellipse([cx-inn, cy-inn, cx+inn, cy+inn], fill=(br, bg_c, bb))
+        elif t == 5: _draw_shape(drw, poly_pts(cx, cy, sz, 4, rot + math.pi/4), col)             # diamond
+        else:        _draw_shape(drw, rot_rect(cx, cy, sz*rnd(1.2,2.2), sz*rnd(.5,.9), rot), col) # wide rect
+
+
+def _draw_accent_shapes(drw, W, H):
+    """
+    Layer 3: draw 3-5 small accent shapes placed fully within the image bounds.
+
+    These tiny details add visual interest at a fine scale.  Slightly higher
+    opacity (alpha=230) makes them a little more solid than the larger layers.
+    Shape types: 5-pointed star, triangle, or circle.
+    """
+    for _ in range(ri(3, 5)):
+        cx, cy = rnd(0, W), rnd(0, H)
+        rot = rnd(0, 2*math.pi)
+        col = rand_color()
+        sz  = rnd(W*.028, W*.072)   # 3-7% of image width
+        t   = ri(0, 2)
+        if   t == 0: _draw_shape(drw, star_pts(cx, cy, sz, sz*.42, 5, rot), col, 230)  # 5-pointed star
+        elif t == 1: _draw_shape(drw, poly_pts(cx, cy, sz, 3, rot), col, 230)           # triangle
+        else:        _draw_shape(drw, [cx-sz, cy-sz, cx+sz, cy+sz], col, 230)           # circle
+
+
+def _draw_bursts(drw, W, H):
+    """
+    Layer 4: draw 1-3 radial burst / ray patterns.
+
+    Each burst fans out evenly-spaced lines from a small inner circle to a
+    larger outer radius, alternating between two colours.  This creates a
+    starburst or sun-ray effect.
+
+    inn : inner radius where rays begin (kept small to look like a hub)
+    out : outer radius where rays end
+    """
+    for _ in range(ri(1, 3)):
+        cx, cy  = rnd(W*.12, W*.88), rnd(H*.12, H*.88)  # centre well inside the image
+        c1, c2  = rand_color(), rand_color()             # alternating ray colours
+        n_rays  = ri(10, 18)
+        inn     = W * rnd(.008, .020)   # inner radius (start of each ray)
+        out     = W * rnd(.08,  .18)    # outer radius (end   of each ray)
+        for i in range(n_rays):
+            a   = (i / n_rays) * 2 * math.pi   # angle for this ray
+            col = c1 if i % 2 == 0 else c2
+            lw  = max(1, round(rnd(1.5, 4)))
+            drw.line([(cx + inn*math.cos(a), cy + inn*math.sin(a)),
+                      (cx + out*math.cos(a), cy + out*math.sin(a))],
+                     fill=col, width=lw)
+
+
+def _draw_lines(drw, W, H):
+    """
+    Layer 5: draw 1-3 thick diagonal lines across the scene.
+
+    Endpoints are allowed up to 8% outside the canvas so lines can run
+    fully edge-to-edge without starting or ending visibly on-canvas.
+    """
+    for _ in range(ri(1, 3)):
+        drw.line([(rnd(-W*.08, W*1.08), rnd(-H*.08, H*1.08)),
+                  (rnd(-W*.08, W*1.08), rnd(-H*.08, H*1.08))],
+                 fill=rand_color(), width=max(1, round(rnd(4, 8))))
+
+
+def _draw_vignette(img, W, H, bg_rgb):
+    """
+    Layer 6: apply a vignette (darkened-edge overlay) to the image in-place.
+
+    A vignette makes the image look more polished and slightly three-dimensional
+    by darkening the edges.  We build a greyscale "mask" image: pixels with a
+    high mask value darken the image at that position; a mask value of 0
+    leaves the image unchanged.
+
+    The mask is built by drawing concentric ellipses with decreasing darkness
+    from the outside in.  The outermost ring is darkest; the centre fades to
+    fully transparent, leaving the middle of the image at full brightness.
+
+    Darker backgrounds get a lighter vignette (max_a is smaller) so the effect
+    is perceptible without making an already-dark scene look black around the edges.
+    """
+    br, bg_c, bb = bg_rgb
+    lum   = (br + bg_c + bb) / (3 * 255)         # average brightness 0-1
+    max_a = int((0.20 + 0.35*(1 - lum)) * 255)   # darker bg → lighter vignette
+    mask  = Image.new('L', (W, H), max_a)         # start: every pixel at max darkness
+    md    = ImageDraw.Draw(mask)
+    for i in range(1, 36):
+        t     = i / 35                                  # 0 → 1 as i increases
+        alpha = int(max_a * max(0.0, 1 - t**0.55))     # fade to 0 at the centre
+        m     = int(t * min(W, H) * 0.48)              # margin grows inward each step
+        md.ellipse([m, m, W-m, H-m], fill=alpha)       # draw progressively smaller ellipse
+    # Paste a black layer using the mask: high mask value → more darkening, 0 → none
+    img.paste(Image.new('RGB', (W, H), (0, 0, 0)), mask=mask)
+
 
 def generate_scene(bg_rgb):
     """
@@ -177,128 +352,19 @@ def generate_scene(bg_rgb):
     The image is SZ pixels wide and SZ_H pixels tall.  It is later sliced into
     tiles by the app.  A new random scene is generated for each new puzzle.
 
-    The scene is built up in layers:
-        1. Background flood-fill
-        2. A few large shapes
-        3. Several medium shapes
-        4. Some small accent shapes
-        5. Radiating burst patterns
-        6. Diagonal lines
-        7. A vignette (darkened edges) to give depth
-
     bg_rgb : (R, G, B) tuple for the background colour
     """
     W, H = SZ, SZ_H
-    br, bg_c, bb = bg_rgb            # unpack background R, G, B components
+    br, bg_c, bb = bg_rgb
     img = Image.new('RGB', (W, H), (br, bg_c, bb))   # blank image filled with bg colour
     drw = ImageDraw.Draw(img, 'RGBA')                 # drawing context; RGBA allows alpha
 
-    def shape(pts_or_bbox, col, alpha=215):
-        """
-        Draw one shape onto the image.
-
-        pts_or_bbox : either a list of (x,y) vertex tuples (→ polygon)
-                      or a flat [x0,y0,x1,y1] bounding box  (→ ellipse)
-        col         : (R, G, B) fill colour
-        alpha       : opacity, 0=transparent, 255=solid; default 215 gives slight
-                      translucency so underlying shapes show through faintly
-        """
-        rgba = col + (alpha,)
-        if isinstance(pts_or_bbox[0], tuple):
-            drw.polygon(pts_or_bbox, fill=rgba)
-        else:
-            drw.ellipse(pts_or_bbox, fill=rgba)
-
-    # ── Layer 1: Large background shapes (2-3) ─────────────────────────────────
-    # These are big enough to bleed off the edges of the image, giving the
-    # impression of an even larger composition.
-    for _ in range(ri(2, 3)):
-        cx, cy = rnd(-W*.12, W*1.12), rnd(-H*.12, H*1.12)  # centre may be off-canvas
-        rot = rnd(0, 2*math.pi)
-        col = rand_color()
-        sz  = rnd(W*.17, W*.33)    # 17-33% of image width
-        t   = ri(0, 5)             # pick a random shape type
-        if   t == 0: shape([cx-sz, cy-sz, cx+sz, cy+sz], col)         # circle / oval
-        elif t == 1: shape(rot_rect(cx, cy, sz*2, sz*rnd(.7,1.1), rot), col)  # rotated rect
-        elif t == 2: shape(poly_pts(cx, cy, sz, 3, rot), col)          # triangle
-        elif t == 3: shape(ellipse_pts(cx, cy, sz, sz*rnd(.38,.65), rot), col)  # ellipse
-        elif t == 4: shape(poly_pts(cx, cy, sz, 6, rot), col)          # hexagon
-        else:        shape(poly_pts(cx, cy, sz, 4, rot), col)          # rotated square
-
-    # ── Layer 2: Medium shapes (4-6) ──────────────────────────────────────────
-    for _ in range(ri(4, 6)):
-        cx, cy = rnd(-W*.08, W*1.08), rnd(-H*.08, H*1.08)
-        rot = rnd(0, 2*math.pi)
-        col = rand_color()
-        sz  = rnd(W*.07, W*.16)    # 7-16% of image width
-        t   = ri(0, 7)
-        if   t == 0: shape(poly_pts(cx, cy, sz, 4, rot), col)         # square
-        elif t == 1: shape(poly_pts(cx, cy, sz, 5, rot), col)         # pentagon
-        elif t == 2: shape(poly_pts(cx, cy, sz, 6, rot), col)         # hexagon
-        elif t == 3: shape([cx-sz, cy-sz, cx+sz, cy+sz], col)         # circle
-        elif t == 4:
-            # Circle with a circular hole punched through it (donut / annulus)
-            shape([cx-sz, cy-sz, cx+sz, cy+sz], col)
-            inn = sz * .52
-            drw.ellipse([cx-inn, cy-inn, cx+inn, cy+inn], fill=(br, bg_c, bb))
-        elif t == 5: shape(poly_pts(cx, cy, sz, 4, rot + math.pi/4), col)  # diamond
-        else:        shape(rot_rect(cx, cy, sz*rnd(1.2,2.2), sz*rnd(.5,.9), rot), col)
-
-    # ── Layer 3: Small accent shapes (3-5) ────────────────────────────────────
-    # These are placed fully within the image bounds to avoid cropped-off details.
-    for _ in range(ri(3, 5)):
-        cx, cy = rnd(0, W), rnd(0, H)
-        rot = rnd(0, 2*math.pi)
-        col = rand_color()
-        sz  = rnd(W*.028, W*.072)   # 3-7% of image width
-        t   = ri(0, 2)
-        if   t == 0: shape(star_pts(cx, cy, sz, sz*.42, 5, rot), col, 230)  # 5-pointed star
-        elif t == 1: shape(poly_pts(cx, cy, sz, 3, rot), col, 230)          # triangle
-        else:        shape([cx-sz, cy-sz, cx+sz, cy+sz], col, 230)          # circle
-
-    # ── Layer 4: Burst / ray patterns (1-3) ───────────────────────────────────
-    # Each burst draws evenly-spaced radial lines from a small inner circle
-    # outward, alternating between two colours.
-    for _ in range(ri(1, 3)):
-        cx, cy = rnd(W*.12, W*.88), rnd(H*.12, H*.88)   # centre well inside the image
-        c1, c2 = rand_color(), rand_color()
-        n_rays  = ri(10, 18)
-        inn = W * rnd(.008, .020)   # inner radius  (start of each ray)
-        out = W * rnd(.08, .18)     # outer radius  (end   of each ray)
-        for i in range(n_rays):
-            a   = (i/n_rays) * 2 * math.pi   # angle for this ray
-            col = c1 if i % 2 == 0 else c2
-            lw  = max(1, round(rnd(1.5, 4)))
-            drw.line([(cx + inn*math.cos(a), cy + inn*math.sin(a)),
-                      (cx + out*math.cos(a), cy + out*math.sin(a))],
-                     fill=col, width=lw)
-
-    # ── Layer 5: Diagonal lines (1-3) ─────────────────────────────────────────
-    for _ in range(ri(1, 3)):
-        drw.line([(rnd(-W*.08, W*1.08), rnd(-H*.08, H*1.08)),
-                  (rnd(-W*.08, W*1.08), rnd(-H*.08, H*1.08))],
-                 fill=rand_color(), width=max(1, round(rnd(4, 8))))
-
-    # ── Layer 6: Vignette (darkened edges) ────────────────────────────────────
-    # A vignette makes the image look more polished and slightly three-dimensional
-    # by darkening the edges.  We create a greyscale "mask" image: pixels with a
-    # high mask value darken the corresponding image pixel; a mask value of 0
-    # leaves the image unchanged.
-    #
-    # The mask is built by drawing concentric ellipses with decreasing alpha
-    # from the outside in.  The outermost ring is darkest; the centre is fully
-    # transparent (alpha=0), leaving the middle of the image at full brightness.
-    lum   = (br + bg_c + bb) / (3*255)          # average brightness of the background
-    max_a = int((0.20 + 0.35*(1 - lum)) * 255)  # darker backgrounds get a lighter vignette
-    mask  = Image.new('L', (W, H), max_a)        # start: every pixel at max darkness
-    md    = ImageDraw.Draw(mask)
-    for i in range(1, 36):
-        t = i / 35                                     # 0 → 1 as i increases
-        alpha = int(max_a * max(0.0, 1 - t**0.55))    # fade to 0 at the centre
-        m = int(t * min(W, H) * 0.48)                 # margin grows inward each step
-        md.ellipse([m, m, W-m, H-m], fill=alpha)      # draw progressively smaller ellipse
-    # Paste a black layer onto the image using the mask: max_a → most darkening, 0 → none
-    img.paste(Image.new('RGB', (W, H), (0, 0, 0)), mask=mask)
+    _draw_large_shapes(drw, W, H)
+    _draw_medium_shapes(drw, W, H, bg_rgb)
+    _draw_accent_shapes(drw, W, H)
+    _draw_bursts(drw, W, H)
+    _draw_lines(drw, W, H)
+    _draw_vignette(img, W, H, bg_rgb)
 
     return img
 
