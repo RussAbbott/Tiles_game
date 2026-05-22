@@ -339,8 +339,14 @@ def _draw_vignette(img, W, H, bg_rgb):
     for i in range(1, 36):
         t     = i / 35                                  # 0 → 1 as i increases
         alpha = int(max_a * max(0.0, 1 - t**0.55))     # fade to 0 at the centre
-        m     = int(t * min(W, H) * 0.48)              # margin grows inward each step
-        md.ellipse([m, m, W-m, H-m], fill=alpha)       # draw progressively smaller ellipse
+        # Scale x and y margins proportionally to the image dimensions so the
+        # vignette ellipses maintain the same aspect ratio as the image.
+        # Using min(W, H) for both would make the ellipses narrow and tall on a
+        # portrait image, leaving the top/bottom unnaturally dark and creating a
+        # visible oval artifact when the solved puzzle is viewed without borders.
+        mx    = int(t * W * 0.48)                      # x-margin proportional to width
+        my    = int(t * H * 0.48)                      # y-margin proportional to height
+        md.ellipse([mx, my, W-mx, H-my], fill=alpha)   # draw progressively smaller ellipse
     # Paste a black layer using the mask: high mask value → more darkening, 0 → none
     img.paste(Image.new('RGB', (W, H), (0, 0, 0)), mask=mask)
 
@@ -664,12 +670,18 @@ class TilePuzzleApp(tk.Tk):
         Source regions are computed by rounding to the nearest pixel to avoid
         cumulative rounding errors (seams) across rows and columns.
 
-        Destination sizes are computed from the difference between adjacent grid
-        line positions so that each tile exactly fills its cell with no gaps or
-        overlaps (a fixed round(_th()) height would leave 1-pixel gaps due to
-        the accumulation of fractional pixels across rows).
+        All tile photos are resized to the same uniform pixel dimensions
+        (round(_tw()) × round(_th())).  This is essential because tiles are
+        shuffled: a photo sized for its original grid cell (which may be 1 pixel
+        shorter or narrower than another cell due to rounding) would leave a
+        1-pixel gap when placed in a slightly larger cell.  That gap exposes the
+        white border halo below, showing up as horizontal white lines.  A
+        uniform size eliminates the mismatch; any 1-pixel overhang at a cell
+        boundary is hidden by the border halo drawn on top.
         """
         self._photos = {}
+        tile_w = round(self._tw())   # uniform display width  for every tile
+        tile_h = round(self._th())   # uniform display height for every tile
         for r in range(self.N):
             for c in range(self.N):
                 # Source crop: the rectangle of the scene belonging to tile (r, c)
@@ -677,11 +689,8 @@ class TilePuzzleApp(tk.Tk):
                 y0 = round(r     * SZ_H / self.N)
                 x1 = round((c+1) * SZ   / self.N)
                 y1 = round((r+1) * SZ_H / self.N)
-                # Destination size: exactly the pixel span between adjacent grid lines
-                dst_w = round(self._tx(c+1)) - round(self._tx(c))
-                dst_h = round(self._ty(r+1)) - round(self._ty(r))
                 tile = scene.crop((x0, y0, x1, y1)).resize(
-                    (max(1, dst_w), max(1, dst_h)), Image.LANCZOS)
+                    (max(1, tile_w), max(1, tile_h)), Image.LANCZOS)
                 self._photos[(r, c)] = ImageTk.PhotoImage(tile)
 
     # ── Drawing ───────────────────────────────────────────────────────────────
