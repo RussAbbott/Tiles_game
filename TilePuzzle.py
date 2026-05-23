@@ -32,13 +32,6 @@ import math
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 
-# SZ_W    = 500                        # Width  of the generated scene image (pixels)
-# SZ_H    = round(SZ_W * 5 / 3)        # Height (old 3:5 ratio — replaced by 3:4 below)
-# MARGIN  = 30
-# BW      = 2
-# CANVAS_W = 520
-# CANVAS_H = round(2*MARGIN + (CANVAS_W - 2*MARGIN) * 5 / 3)   # Height of the canvas (≈ 827)
-
 SZ_W     = 510                        # Total width  of the tile grid (pixels)
 SZ_H     = 680                        # Total height of the tile grid (3:4 ratio)
 
@@ -48,11 +41,13 @@ CANVAS_W = SZ_W + 2*MARGIN            # Total width  of the tkinter canvas widge
 CANVAS_H = SZ_H + 2*MARGIN            # Total height of the canvas widget (740)
 
 # Colour of the canvas background (the border area outside the tile grid).
-# This blue-grey shade is chosen to contrast with the vivid tile colours.
-OUT_R, OUT_G, OUT_B = 148, 168, 225
-OUT_HUE  = 220    # The hue (degrees on the colour wheel) of the background colour
-HUE_AVOID = 40    # Tile colours whose hue falls within this many degrees of the
-                  # background hue are shifted away to keep tiles visually distinct.
+# Warm stone: hue ≈ 35° (yellow-orange).  A warm neutral frame makes cool
+# colours — blues, purples, teals — stand out strongly against it.
+OUT_R, OUT_G, OUT_B = 185, 175, 155
+OUT_HUE   = 35    # Hue (degrees) of the border colour
+HUE_AVOID = 20    # Only the narrow orange/yellow band near the border hue is
+                  # pushed away; the entire blue-indigo arc (≈ 180°–270°) is
+                  # freely available for tile shapes.
 
 # ── Color helpers ──────────────────────────────────────────────────────────────
 #
@@ -85,14 +80,19 @@ def rand_color():
     Uses the "golden-angle" increment (137.5°) to step around the colour wheel,
     which spreads colours evenly and avoids repeats.  A small random jitter is
     added so successive colours are not perfectly uniform.  Hues too close to the
-    background colour are nudged away so shapes always stand out.
+    border colour are nudged away so shapes always contrast with the frame.
+
+    Saturation 0.60–1.00 and lightness 0.30–0.65 together give a wide palette:
+      • high sat + low light  → deep jewel tones (sapphire, ruby, forest green)
+      • high sat + mid light  → classic vivid colours
+      • lower sat + mid light → softer dusty tones (slate blue, muted rose)
     """
     _hue[0] = (_hue[0] + 137.5) % 360        # advance by the golden angle
     h = (_hue[0] + random.uniform(-10, 10) + 360) % 360   # add jitter
-    # If the hue is too close to the background colour, push it away
+    # If the hue is too close to the border colour, push it away
     if abs(((h - OUT_HUE + 540) % 360) - 180) < HUE_AVOID:
         h = (OUT_HUE + HUE_AVOID + 10 + random.random() * 20) % 360
-    r, g, b = hsl_to_rgb(h, 0.75 + random.random()*0.25, 0.45 + random.random()*0.20)
+    r, g, b = hsl_to_rgb(h, 0.60 + random.random()*0.40, 0.30 + random.random()*0.35)
     return r, g, b
 
 def rand_bg():
