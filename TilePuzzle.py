@@ -435,9 +435,13 @@ class TilePuzzleApp(tk.Tk):
         ctrl.pack(fill='x')
 
         # Status label: shows messages like "Dragging tile" or "Puzzle solved!"
+        # fill='x' is essential: without it the label shrinks when the text gets
+        # shorter (e.g. "Dragging tile." vs the long default), which causes the
+        # ctrl bar to reflow and the canvas to shift horizontally on every click.
         self.status_var = tk.StringVar(value='Drag a tile or bonded group to move it.')
         tk.Label(ctrl, textvariable=self.status_var, font=('Helvetica', 11),
-                 bg='#d4edda', fg='#155724').pack(side='left', expand=True, anchor='w')
+                 bg='#d4edda', fg='#155724').pack(side='left', expand=True,
+                                                   fill='x', anchor='w')
 
         # Grid-size selector: choosing a new size immediately starts a new puzzle
         tk.Label(ctrl, text='Grid:', font=('Helvetica', 11),
@@ -447,19 +451,19 @@ class TilePuzzleApp(tk.Tk):
                       command=lambda _: self.build_grid()
                       ).pack(side='left', padx=(0, 6))
 
-        # Undo button: starts disabled; enabled whenever there is history
-        self.undo_btn = tk.Button(ctrl, text='↩ Undo', font=('Helvetica', 11),
+        # Back button: step to the previous state (= Undo)
+        self.undo_btn = tk.Button(ctrl, text='◀ Back', font=('Helvetica', 11),
                                    state='disabled', command=self.undo,
                                    relief='flat', padx=6)
         self.undo_btn.pack(side='left', padx=(0, 2))
 
-        # Redo button: re-applies the most recently undone move
-        self.redo_btn = tk.Button(ctrl, text='↪ Redo', font=('Helvetica', 11),
+        # Forward button: step to the next state (= Redo)
+        self.redo_btn = tk.Button(ctrl, text='▶ Forward', font=('Helvetica', 11),
                                    state='disabled', command=self.redo,
                                    relief='flat', padx=6)
         self.redo_btn.pack(side='left', padx=(0, 2))
 
-        # Restart button: returns the puzzle to its opening shuffled position
+        # Restart button: jump to the opening position; all moves become Forward-able
         self.restart_btn = tk.Button(ctrl, text='⏮ Restart', font=('Helvetica', 11),
                                       state='disabled', command=self.restart,
                                       relief='flat', padx=6)
@@ -483,12 +487,7 @@ class TilePuzzleApp(tk.Tk):
         bg_hex = '#{:02x}{:02x}{:02x}'.format(OUT_R, OUT_G, OUT_B)
         self.canvas = tk.Canvas(self, width=CANVAS_W, height=CANVAS_H,
                                  bg=bg_hex, highlightthickness=0, cursor='hand2')
-        # anchor='nw' pins the canvas to the top-left of its allocated slot.
-        # The default anchor='center' would center it horizontally; if the control
-        # bar is even a few pixels wider than CANVAS_W the canvas would start
-        # slightly offset, and any later layout change (e.g. the status label
-        # shortening when a drag begins) could shift it sideways.
-        self.canvas.pack(anchor='nw')
+        self.canvas.pack()   # default anchor='center' — centered in the window
 
         # Bind mouse events for drag-and-drop interaction
         self.canvas.bind('<ButtonPress-1>',   self._on_down)   # mouse button pressed
@@ -687,15 +686,45 @@ class TilePuzzleApp(tk.Tk):
         self._redraw()
 
     def restart(self):
-        """Reset the puzzle to its opening shuffled position."""
-        if not self.initial_tiles:
-            return
+        """
+        Jump to the opening shuffled position while preserving the full move
+        history as a Forward (redo) sequence.
+
+        After restarting, every move that was made is still accessible via
+        ▶ Forward, so the player can step through their original solution from
+        the beginning, or diverge onto a different line of play at any point.
+
+        This is equivalent to pressing ◀ Back all the way to the start, except
+        it also keeps any states that had been previously undone (i.e. it
+        concatenates the current redo stack, current state, and all history
+        after the initial position into a single forward sequence).
+
+        The full timeline is:
+            initial | T1 | T2 | … | current | redo_top | … | redo_bottom
+        After restart:
+            tiles = initial,  history = [],
+            redo_stack = [furthest, …, T1]   (T1 pops first so Forward → T1)
+        """
+        if not self.initial_tiles or not self.history:
+            return   # never moved, or already at the opening position
+
+        # Build the complete forward sequence so every past state is reachable
+        # via Forward.  redo_stack uses LIFO (pop gives the closest future first),
+        # so the list must be ordered [furthest … closest]:
+        #   • self.redo_stack already holds any states ahead of the current position
+        #   • current tiles are the next step back from those
+        #   • history[1:] (reversed) holds the states between T1 and current
+        #     (history[0] == initial_tiles, already the target, so skip it)
+        new_redo = (list(self.redo_stack)            # furthest future states first
+                    + [self._snapshot()]             # current state
+                    + list(reversed(self.history[1:])))  # T_n-1 … T1, closest last
+
         self.history.clear()
-        self.redo_stack.clear()
+        self.redo_stack = new_redo
         self.tiles  = [[dict(t) for t in row] for row in self.initial_tiles]
         self.solved = False
         self.undo_btn.config(state='disabled')
-        self.redo_btn.config(state='disabled')
+        self.redo_btn.config(state='normal' if new_redo else 'disabled')
         self.status_var.set('Drag a tile or bonded group to move it.')
         self._redraw()
 
