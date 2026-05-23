@@ -32,14 +32,20 @@ import math
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 
-SZ       = 500                        # Width  of the generated scene image (pixels)
-SZ_H     = round(SZ * 5 / 3)          # Height of the generated scene image.
-                                      # Tiles have a 3-wide : 5-tall aspect ratio,
-                                      # matching the proportions of commercial tile sets.
-MARGIN   = 30                         # Gap (pixels) between the canvas edge and the grid
-BW       = 2                          # Half-width of the border lines drawn between tiles
-CANVAS_W = 520                        # Width  of the tkinter canvas widget (pixels)
-CANVAS_H = round(2*MARGIN + (CANVAS_W - 2*MARGIN) * 5 / 3)   # Height of the canvas (≈ 827)
+# SZ_W    = 500                        # Width  of the generated scene image (pixels)
+# SZ_H    = round(SZ_W * 5 / 3)        # Height (old 3:5 ratio — replaced by 3:4 below)
+# MARGIN  = 30
+# BW      = 2
+# CANVAS_W = 520
+# CANVAS_H = round(2*MARGIN + (CANVAS_W - 2*MARGIN) * 5 / 3)   # Height of the canvas (≈ 827)
+
+SZ_W     = 510                        # Total width  of the tile grid (pixels)
+SZ_H     = 680                        # Total height of the tile grid (3:4 ratio)
+
+MARGIN   = 30                         # Gap between the canvas edge and the grid
+BW       = 2                          # Half-width of the border lines
+CANVAS_W = SZ_W + 2*MARGIN            # Total width  of the tkinter canvas widget (570)
+CANVAS_H = SZ_H + 2*MARGIN            # Total height of the canvas widget (740)
 
 # Colour of the canvas background (the border area outside the tile grid).
 # This blue-grey shade is chosen to contrast with the vivid tile colours.
@@ -357,12 +363,12 @@ def generate_scene(bg_rgb):
     """
     Create and return a randomly generated abstract image (a Pillow Image object).
 
-    The image is SZ pixels wide and SZ_H pixels tall.  It is later sliced into
+    The image is SZ_W pixels wide and SZ_H pixels tall.  It is later sliced into
     tiles by the app.  A new random scene is generated for each new puzzle.
 
     bg_rgb : (R, G, B) tuple for the background colour
     """
-    W, H = SZ, SZ_H
+    W, H = SZ_W, SZ_H
     br, bg_c, bb = bg_rgb
     img = Image.new('RGB', (W, H), (br, bg_c, bb))   # blank image filled with bg colour
     drw = ImageDraw.Draw(img, 'RGBA')                 # drawing context; RGBA allows alpha
@@ -751,7 +757,7 @@ class TilePuzzleApp(tk.Tk):
         Let the user pick an image file from disk and start a new puzzle with it.
 
         The chosen image is scaled and centre-cropped to the scene dimensions
-        (SZ × SZ_H) using _fit_image, then handed to _start_puzzle exactly like
+        (SZ_W × SZ_H) using _fit_image, then handed to _start_puzzle exactly like
         a generated scene.  Supports any format Pillow can open (JPEG, PNG,
         BMP, WEBP, TIFF, …).
         """
@@ -772,7 +778,7 @@ class TilePuzzleApp(tk.Tk):
         self.N = int(self.grid_var.get())
         self.status_var.set('Loading…')
         self.update()
-        self._start_puzzle(_fit_image(img, SZ, SZ_H))
+        self._start_puzzle(_fit_image(img, SZ_W, SZ_H))
 
     def _load_url(self):
         """
@@ -846,7 +852,7 @@ class TilePuzzleApp(tk.Tk):
             self.status_var.set('Drag a tile or bonded group to move it.')
             return
         self.N = int(self.grid_var.get())
-        self._start_puzzle(_fit_image(img, SZ, SZ_H))
+        self._start_puzzle(_fit_image(img, SZ_W, SZ_H))
 
     def _start_puzzle(self, scene):
         """
@@ -918,9 +924,9 @@ class TilePuzzleApp(tk.Tk):
         for r in range(self.N):
             for c in range(self.N):
                 # Source crop: the rectangle of the scene belonging to tile (r, c)
-                x0 = round(c     * SZ   / self.N)
+                x0 = round(c     * SZ_W / self.N)
                 y0 = round(r     * SZ_H / self.N)
-                x1 = round((c+1) * SZ   / self.N)
+                x1 = round((c+1) * SZ_W / self.N)
                 y1 = round((r+1) * SZ_H / self.N)
                 tile = scene.crop((x0, y0, x1, y1)).resize(
                     (max(1, tile_w), max(1, tile_h)), Image.LANCZOS)
