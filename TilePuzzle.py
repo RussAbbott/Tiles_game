@@ -399,18 +399,29 @@ class TilePuzzleApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Tile Puzzle")
-        self.resizable(False, False)
         self.configure(bg='#e8eaf0')
 
-        self.N       = 5       # default grid size
-        self.tiles   = []
-        self.drag    = None
-        self.solved  = False
-        self.history = []
-        self._photos = {}
+        self.N             = 5    # default grid size
+        self.tiles         = []
+        self.drag          = None
+        self.solved        = False
+        self.history       = []   # undo stack  (list of tile-grid snapshots)
+        self.redo_stack    = []   # redo stack  (states popped by undo)
+        self.initial_tiles = []   # snapshot of the opening shuffle (for Restart)
+        self._photos       = {}
 
         self._build_ui()
         self.build_grid()
+
+        # Lock the window size AFTER the first puzzle has been fully drawn.
+        # resizable(False,False) alone does not stop tkinter from resizing the
+        # window later when widget content changes (e.g. the status label
+        # shrinking from "Drag a tile or bonded group…" to "Dragging tile.").
+        # update_idletasks() flushes all pending geometry work; then setting
+        # geometry() explicitly freezes the pixel dimensions.
+        self.update_idletasks()
+        self.geometry(f'{self.winfo_width()}x{self.winfo_height()}')
+        self.resizable(False, False)
 
     # ── UI ────────────────────────────────────────────────────────────────────
 
@@ -439,12 +450,24 @@ class TilePuzzleApp(tk.Tk):
         # Undo button: starts disabled; enabled whenever there is history
         self.undo_btn = tk.Button(ctrl, text='↩ Undo', font=('Helvetica', 11),
                                    state='disabled', command=self.undo,
-                                   relief='flat', padx=10)
-        self.undo_btn.pack(side='left', padx=(0, 4))
+                                   relief='flat', padx=6)
+        self.undo_btn.pack(side='left', padx=(0, 2))
+
+        # Redo button: re-applies the most recently undone move
+        self.redo_btn = tk.Button(ctrl, text='↪ Redo', font=('Helvetica', 11),
+                                   state='disabled', command=self.redo,
+                                   relief='flat', padx=6)
+        self.redo_btn.pack(side='left', padx=(0, 2))
+
+        # Restart button: returns the puzzle to its opening shuffled position
+        self.restart_btn = tk.Button(ctrl, text='⏮ Restart', font=('Helvetica', 11),
+                                      state='disabled', command=self.restart,
+                                      relief='flat', padx=6)
+        self.restart_btn.pack(side='left', padx=(0, 4))
 
         # New button: generates a brand-new random puzzle
         tk.Button(ctrl, text='↺ New', font=('Helvetica', 11),
-                  command=self.build_grid, relief='flat', padx=10).pack(side='left', padx=(0, 4))
+                  command=self.build_grid, relief='flat', padx=6).pack(side='left', padx=(0, 4))
 
         # Load button: lets the user choose an image file to use as the puzzle
         tk.Button(ctrl, text='📂 Load', font=('Helvetica', 11),
@@ -460,7 +483,12 @@ class TilePuzzleApp(tk.Tk):
         bg_hex = '#{:02x}{:02x}{:02x}'.format(OUT_R, OUT_G, OUT_B)
         self.canvas = tk.Canvas(self, width=CANVAS_W, height=CANVAS_H,
                                  bg=bg_hex, highlightthickness=0, cursor='hand2')
-        self.canvas.pack()
+        # anchor='nw' pins the canvas to the top-left of its allocated slot.
+        # The default anchor='center' would center it horizontally; if the control
+        # bar is even a few pixels wider than CANVAS_W the canvas would start
+        # slightly offset, and any later layout change (e.g. the status label
+        # shortening when a drag begins) could shift it sideways.
+        self.canvas.pack(anchor='nw')
 
         # Bind mouse events for drag-and-drop interaction
         self.canvas.bind('<ButtonPress-1>',   self._on_down)   # mouse button pressed
@@ -570,11 +598,17 @@ class TilePuzzleApp(tk.Tk):
         gK   = {(p['r'], p['c']) for p in gc}    # cells currently occupied by the group
         dK   = {(p['r'], p['c']) for p in dest}  # cells the group will move into
 
-        # Cells being vacated: group cells that are NOT also destination cells
-        vac  = [p for p in gc if (p['r'], p['c']) not in dK]
-        # Tiles being displaced: tiles in destination cells not already in the group
-        disp = [{'r': p['r'], 'c': p['c'], 't': dict(self.tiles[p['r']][p['c']])}
-                for p in dest if (p['r'], p['c']) not in gK]
+        # Cells being vacated: group cells that are NOT also destination cells.
+        # Sorted by (row, col) so they are paired with displaced tiles in spatial order.
+        vac  = sorted([p for p in gc if (p['r'], p['c']) not in dK],
+                      key=lambda p: (p['r'], p['c']))
+        # Tiles being displaced: tiles in destination cells not already in the group.
+        # Also sorted by (row, col) so that the i-th displaced tile is paired with the
+        # i-th vacated cell — tiles that are neighbours in the displaced group end up
+        # in neighbouring vacated cells, keeping the displaced group intact.
+        disp = sorted([{'r': p['r'], 'c': p['c'], 't': dict(self.tiles[p['r']][p['c']])}
+                       for p in dest if (p['r'], p['c']) not in gK],
+                      key=lambda p: (p['r'], p['c']))
 
         if len(disp) != len(vac):
             return None          # can't swap: counts don't match
@@ -595,34 +629,73 @@ class TilePuzzleApp(tk.Tk):
         if res is None:
             return False
         self._push_history()
-        # Save displaced tiles before overwriting their cells
+        # Save displaced tiles before overwriting their cells.
+        # Both res['disp'] and res['vac'] are already sorted by (row, col) in
+        # _check_drop, so pairing by index preserves the spatial arrangement of
+        # the displaced group: the tile at the top-left of the displaced region
+        # goes to the top-left vacated cell, and so on.
         saved = [dict(d) for d in res['disp']]
         # Place dragged tiles at their destinations
         for p in res['dest']:
             self.tiles[p['r']][p['c']] = {'or': p['or'], 'oc': p['oc']}
-        # Place displaced tiles in the vacated cells
+        # Place each displaced tile into its spatially-matched vacated cell
         for i, d in enumerate(saved):
             v = res['vac'][i]
             self.tiles[v['r']][v['c']] = d['t']
         return True
 
+    def _snapshot(self):
+        """Return a deep copy of the current tile grid."""
+        return [[dict(t) for t in row] for row in self.tiles]
+
     def _push_history(self):
         """
-        Save a deep copy of the current tile grid to the undo history stack.
-        Caps the stack at 80 entries to avoid unbounded memory use.
+        Save the current tile grid to the undo stack before each move.
+        Any redo history is discarded — a new move always forks the timeline.
+        Caps the undo stack at 80 entries to bound memory use.
         """
-        self.history.append([[dict(t) for t in row] for row in self.tiles])
+        self.history.append(self._snapshot())
         if len(self.history) > 80:
             self.history.pop(0)
+        # A new move invalidates any previously undone states
+        self.redo_stack.clear()
         self.undo_btn.config(state='normal')
+        self.redo_btn.config(state='disabled')
 
     def undo(self):
         """Restore the tile grid to the state before the last move."""
         if not self.history:
             return
+        self.redo_stack.append(self._snapshot())   # save current for redo
         self.tiles = self.history.pop()
         self.solved = False
         self.undo_btn.config(state='disabled' if not self.history else 'normal')
+        self.redo_btn.config(state='normal')
+        self.status_var.set('Drag a tile or bonded group to move it.')
+        self._redraw()
+
+    def redo(self):
+        """Re-apply the most recently undone move."""
+        if not self.redo_stack:
+            return
+        self.history.append(self._snapshot())      # save current for undo
+        self.tiles = self.redo_stack.pop()
+        self.solved = False
+        self.undo_btn.config(state='normal')
+        self.redo_btn.config(state='disabled' if not self.redo_stack else 'normal')
+        self.status_var.set('Drag a tile or bonded group to move it.')
+        self._redraw()
+
+    def restart(self):
+        """Reset the puzzle to its opening shuffled position."""
+        if not self.initial_tiles:
+            return
+        self.history.clear()
+        self.redo_stack.clear()
+        self.tiles  = [[dict(t) for t in row] for row in self.initial_tiles]
+        self.solved = False
+        self.undo_btn.config(state='disabled')
+        self.redo_btn.config(state='disabled')
         self.status_var.set('Drag a tile or bonded group to move it.')
         self._redraw()
 
@@ -664,7 +737,8 @@ class TilePuzzleApp(tk.Tk):
         try:
             img = Image.open(path).convert('RGB')
         except Exception as e:
-            self.status_var.set(f'Could not open image: {e}')
+            from tkinter import messagebox
+            messagebox.showerror('Could not open image', str(e), parent=self)
             return
         self.N = int(self.grid_var.get())
         self.status_var.set('Loading…')
@@ -723,10 +797,24 @@ class TilePuzzleApp(tk.Tk):
             req = urllib.request.Request(
                 url, headers={'User-Agent': 'Mozilla/5.0 (TilePuzzle)'})
             with urllib.request.urlopen(req, timeout=15) as resp:
+                content_type = resp.headers.get('Content-Type', '')
                 data = resp.read()
+            # If the server returned an HTML page instead of an image, give a
+            # specific message — the most common cause is pasting a page URL
+            # (e.g. a Facebook post) rather than a direct image URL.
+            if 'text/html' in content_type:
+                raise ValueError(
+                    'That URL points to a web page, not an image.\n\n'
+                    'To get a direct image URL:\n'
+                    '  • Right-click the image in your browser\n'
+                    '  • Choose "Copy image address"\n\n'
+                    'Note: images on Facebook and other sites that\n'
+                    'require a login cannot be loaded this way.')
             img = Image.open(io.BytesIO(data)).convert('RGB')
         except Exception as e:
-            self.status_var.set(f'Could not load URL: {e}')
+            from tkinter import messagebox
+            messagebox.showerror('Could not load image', str(e), parent=self)
+            self.status_var.set('Drag a tile or bonded group to move it.')
             return
         self.N = int(self.grid_var.get())
         self._start_puzzle(_fit_image(img, SZ, SZ_H))
@@ -738,10 +826,13 @@ class TilePuzzleApp(tk.Tk):
         Called by build_grid (random scene), _load_image (file), and
         _load_url (web) so all the setup logic lives in one place.
         """
-        self.drag    = None
-        self.solved  = False
-        self.history = []
+        self.drag       = None
+        self.solved     = False
+        self.history    = []
+        self.redo_stack = []
         self.undo_btn.config(state='disabled')
+        self.redo_btn.config(state='disabled')
+        self.restart_btn.config(state='disabled')
         self._make_photos(scene)
 
         # Build the solved tile grid: tiles[r][c] starts at its correct position
@@ -756,6 +847,10 @@ class TilePuzzleApp(tk.Tk):
             j = random.randint(0, i)
             r1, c1 = flat[i]; r2, c2 = flat[j]
             self.tiles[r1][c1], self.tiles[r2][c2] = self.tiles[r2][c2], self.tiles[r1][c1]
+
+        # Snapshot the opening position so Restart can return to it at any time
+        self.initial_tiles = [[dict(t) for t in row] for row in self.tiles]
+        self.restart_btn.config(state='normal')
 
         self.status_var.set('Drag a tile or bonded group to move it.')
         self._redraw()
