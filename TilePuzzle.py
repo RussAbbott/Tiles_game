@@ -404,7 +404,7 @@ class TilePuzzleApp(tk.Tk):
 
     def __init__(self):
         super().__init__()
-        self.title("Tile Puzzle")
+        self.title("Sliding Tiles")
         self.configure(bg='#e8eaf0')
 
         self.N             = 5    # default grid size
